@@ -191,6 +191,7 @@ fn tick() {
             with(|a| a.log(&format!("force kill {} {mb}MB", g.name)));
         }
     }
+    actions::trim(std::process::id()); // keeps our own footprint near the 5 MB target
 }
 
 fn open_config() {
