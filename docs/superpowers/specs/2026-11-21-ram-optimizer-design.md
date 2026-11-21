@@ -1,7 +1,7 @@
 # RamOptimizer — Design
 
 Date: 2026-11-21
-Status: Draft, awaiting approval
+Status: Approved 2026-11-21
 
 ## Intent and why
 
@@ -67,6 +67,9 @@ The main thread runs the Win32 message loop. A 10 s `SetTimer` drives the check 
    - it has not been trimmed in the last 10 minutes.
 
    The 10-minute gap avoids thrashing. Access-denied errors are skipped silently.
+
+### Nothing to do
+High RAM usage on its own is acceptable. If steps 3–5 find nothing to act on, the tick ends silently, with no alert and no log line, and monitoring continues on the next tick. Saved decisions, cooldowns, and snoozes are respected even when usage stays above the threshold. Usage above the threshold is never a reason to prompt again.
 
 ### Popups
 The popups use `TaskDialogIndirect`, which supports custom buttons. This needs a comctl32 v6 manifest, which is embedded at build time.
