@@ -97,7 +97,9 @@ impl Default for Config {
                 ),
                 // OfficeClickToRun.exe runs as SYSTEM; these are the per-user helpers.
                 app("Office background", &["msoia.exe", "OfficeC2RClient.exe", "msoadfsb.exe"], OFFICE),
-                app("Widgets", &["WidgetBoard.exe", "WidgetService.exe"], &[]),
+                app("Widgets", &["WidgetBoard.exe", "WidgetService.exe", "MicrosoftStartFeedProvider.exe"], &[]),
+                // Tray UI only: the tailscaled service (the VPN itself) keeps running.
+                app("Tailscale tray", &["tailscale-ipn.exe"], &[]),
             ],
             idle_groups: vec![IdleGroup {
                 name: "Antigravity".into(),
@@ -210,9 +212,11 @@ mod tests {
     #[test]
     fn default_covers_requested_apps() {
         let c = Config::default();
-        for n in ["Microsoft Store", "Copilot", "WSL", "MathWorks services", "Office background", "Widgets"] {
+        for n in ["Microsoft Store", "Copilot", "WSL", "MathWorks services", "Office background", "Widgets", "Tailscale tray"] {
             assert!(c.apps.iter().any(|a| a.name == n), "{n}");
         }
         assert_eq!(c.apps[0].exe, vec!["Discord.exe"]);
+        let w = c.apps.iter().find(|a| a.name == "Widgets").unwrap();
+        assert!(w.exe.contains(&"MicrosoftStartFeedProvider.exe".to_string()));
     }
 }
