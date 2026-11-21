@@ -18,6 +18,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use windows_sys::core::BOOL;
 
 pub const DWM_CLOAKED_APP: u32 = 0x1;
+#[allow(dead_code)] // documents the bit cloak_hides ignores; used in tests
 pub const DWM_CLOAKED_SHELL: u32 = 0x2;
 pub const DWM_CLOAKED_INHERITED: u32 = 0x4;
 
