@@ -38,11 +38,16 @@ pub fn exe_in(list: &[String], exe: &str) -> bool {
     list.iter().any(|e| e.eq_ignore_ascii_case(exe))
 }
 
-/// MB used by the app when at least one of its processes runs and none owns a visible window.
+/// MB used by the app when at least one of its own-session processes runs, none owns a visible
+/// window, and no `unless_running` main app is alive. Other-session (SYSTEM) processes are ignored:
+/// they cannot be killed without admin.
 pub fn app_closed(rule: &AppRule, f: &Facts) -> Option<u64> {
+    if f.procs.iter().any(|p| exe_in(&rule.unless_running, &p.exe)) {
+        return None;
+    }
     let mut any = false;
     let mut bytes = 0;
-    for p in f.procs.iter().filter(|p| exe_in(&rule.exe, &p.exe)) {
+    for p in f.procs.iter().filter(|p| p.same_session && exe_in(&rule.exe, &p.exe)) {
         if f.visible_pids.contains(&p.pid) {
             return None;
         }
@@ -440,5 +445,34 @@ mod tests {
         let mut pl = Planner::new(&cfg);
         let f = facts(Instant::now(), 90, vec![p(10, "discord.EXE", 100)]);
         assert_eq!(prompts(&pl.plan(&cfg, &f, false, false)), 1);
+    }
+
+    fn mathworks_cfg() -> (Config, usize) {
+        let cfg = Config::default();
+        let i = cfg.apps.iter().position(|a| a.name == "MathWorks services").unwrap();
+        (cfg, i)
+    }
+
+    #[test]
+    fn unless_running_blocks_close() {
+        let (cfg, i) = mathworks_cfg();
+        let mut pl = Planner::new(&cfg);
+        let svc = || vec![p(40, "MathWorksServiceHost.exe", 48), p(41, "MathWorksServiceHost-Monitor.exe", 25)];
+        let mut with_matlab = svc();
+        with_matlab.push(p(42, "MATLAB.exe", 1500)); // windowless (e.g. minimized to tray) still counts
+        let a = pl.plan(&cfg, &facts(Instant::now(), 90, with_matlab), false, false);
+        assert!(!a.iter().any(|x| matches!(x, Action::PromptApp { app_idx, .. } if *app_idx == i)));
+        let a = pl.plan(&cfg, &facts(Instant::now(), 90, svc()), false, false);
+        assert!(a.contains(&Action::PromptApp { app_idx: i, mb: 73 }));
+    }
+
+    #[test]
+    fn other_session_processes_never_prompt() {
+        let cfg = Config::default();
+        let mut pl = Planner::new(&cfg);
+        let mut d = p(10, "Discord.exe", 100);
+        d.same_session = false; // SYSTEM service: cannot be killed without admin
+        let a = pl.plan(&cfg, &facts(Instant::now(), 90, vec![d]), false, false);
+        assert_eq!(prompts(&a), 0);
     }
 }

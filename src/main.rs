@@ -88,8 +88,7 @@ impl App {
 }
 
 fn app_name(cfg: &Config, idx: usize) -> String {
-    let e = &cfg.apps[idx].exe[0];
-    e.strip_suffix(".exe").or_else(|| e.strip_suffix(".EXE")).unwrap_or(e).to_string()
+    cfg.apps[idx].display_name()
 }
 
 /// Kills every live process of the given exe list (fresh snapshot, name re-checked per PID). Returns MB freed.

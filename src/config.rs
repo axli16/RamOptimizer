@@ -16,9 +16,26 @@ pub struct Config {
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct AppRule {
+    /// Shown in popups; empty = first exe without ".exe".
+    #[serde(default)]
+    pub name: String,
     pub exe: Vec<String>,
+    /// Helper processes are only "closed" while none of these (the main app) run, visible or not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unless_running: Vec<String>,
     #[serde(default)]
     pub decision: Decision,
+}
+
+impl AppRule {
+    pub fn display_name(&self) -> String {
+        if !self.name.is_empty() {
+            return self.name.clone();
+        }
+        let e = self.exe.first().map(String::as_str).unwrap_or("?");
+        let n = e.len().saturating_sub(4);
+        if e.len() > 4 && e[n..].eq_ignore_ascii_case(".exe") { e[..n].to_string() } else { e.to_string() }
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Default)]
@@ -47,7 +64,13 @@ fn strs(v: &[&str]) -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        let app = |exe: &[&str]| AppRule { exe: strs(exe), decision: Decision::Ask };
+        let app = |name: &str, exe: &[&str], unless: &[&str]| AppRule {
+            name: name.into(),
+            exe: strs(exe),
+            unless_running: strs(unless),
+            decision: Decision::Ask,
+        };
+        const OFFICE: &[&str] = &["WINWORD.EXE", "EXCEL.EXE", "POWERPNT.EXE", "OUTLOOK.EXE", "ONENOTE.EXE", "MSACCESS.EXE"];
         Config {
             threshold_percent: 85,
             poll_seconds: 10,
@@ -58,11 +81,23 @@ impl Default for Config {
                 "winlogon.exe", "services.exe", "smss.exe", "wininit.exe", "ramoptimizer.exe",
             ]),
             apps: vec![
-                app(&["Discord.exe"]),
-                app(&["steam.exe", "steamwebhelper.exe"]),
-                app(&["Spotify.exe"]),
-                app(&["ms-teams.exe"]),
-                app(&["EpicGamesLauncher.exe"]),
+                app("", &["Discord.exe"], &[]),
+                app("Steam", &["steam.exe", "steamwebhelper.exe"], &[]),
+                app("Spotify", &["Spotify.exe", "SpotifyLauncher.exe"], &[]),
+                app("Teams", &["ms-teams.exe"], &[]),
+                app("Epic Games", &["EpicGamesLauncher.exe"], &[]),
+                app("Microsoft Store", &["WinStore.App.exe"], &[]),
+                app("Copilot", &["Copilot.exe"], &[]),
+                // wslservice.exe runs as SYSTEM, so only the per-user parts can be closed without admin.
+                app("WSL", &["wsl.exe", "wslhost.exe", "wslrelay.exe"], &[]),
+                app(
+                    "MathWorks services",
+                    &["MathWorksServiceHost.exe", "MathWorksServiceHost-Monitor.exe", "MathWorksCrashReporter.exe"],
+                    &["MATLAB.exe"],
+                ),
+                // OfficeClickToRun.exe runs as SYSTEM; these are the per-user helpers.
+                app("Office background", &["msoia.exe", "OfficeC2RClient.exe", "msoadfsb.exe"], OFFICE),
+                app("Widgets", &["WidgetBoard.exe", "WidgetService.exe"], &[]),
             ],
             idle_groups: vec![IdleGroup {
                 name: "Antigravity".into(),
@@ -162,5 +197,22 @@ mod tests {
         let c = load_or_create(&p).0;
         assert_eq!(c.threshold_percent, 90);
         assert_eq!(c.poll_seconds, 10);
+    }
+
+    #[test]
+    fn display_name_prefers_name_then_exe() {
+        let mut r = AppRule { name: String::new(), exe: vec!["Discord.exe".into()], unless_running: vec![], decision: Decision::Ask };
+        assert_eq!(r.display_name(), "Discord");
+        r.name = "MathWorks services".into();
+        assert_eq!(r.display_name(), "MathWorks services");
+    }
+
+    #[test]
+    fn default_covers_requested_apps() {
+        let c = Config::default();
+        for n in ["Microsoft Store", "Copilot", "WSL", "MathWorks services", "Office background", "Widgets"] {
+            assert!(c.apps.iter().any(|a| a.name == n), "{n}");
+        }
+        assert_eq!(c.apps[0].exe, vec!["Discord.exe"]);
     }
 }
