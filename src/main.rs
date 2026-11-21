@@ -2,5 +2,6 @@
 
 mod config;
 mod policy;
+mod procs;
 
 fn main() {}
