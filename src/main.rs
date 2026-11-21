@@ -6,6 +6,7 @@ mod log;
 mod policy;
 mod procs;
 mod stats;
+mod toast;
 mod tray;
 
 use config::{Config, Decision};

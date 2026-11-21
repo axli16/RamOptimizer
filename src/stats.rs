@@ -63,20 +63,20 @@ impl Stats {
 
     /// (headline, body) for the popup.
     pub fn summary_text(&self) -> (String, String) {
-        let head = format!(
-            "Freed {:.1} GB this week ({:.1} GB closed, {:.1} GB trimmed).",
-            gb(self.closed_mb + self.trim_mb),
-            gb(self.closed_mb),
-            gb(self.trim_mb)
-        );
+        // Headline stays short to fit the card's single bold line; the split goes in the body.
+        let head = format!("Freed {:.1} GB this week", gb(self.closed_mb + self.trim_mb));
+        let mut body = format!("{:.1} GB closed, {:.1} GB trimmed", gb(self.closed_mb), gb(self.trim_mb));
         if self.apps.is_empty() {
-            return (head, "No apps were closed this week.".into());
+            body += "\nNo apps were closed this week.";
+            return (head, body);
         }
         let mut top: Vec<_> = self.apps.iter().collect();
         top.sort_by(|a, b| b.1.count.cmp(&a.1.count).then(b.1.mb.cmp(&a.1.mb)));
-        let mut body = String::from("Most closed:");
+        body += "\nMost closed:";
         for (name, s) in top.into_iter().take(5) {
-            body += &format!("\n{name}  {}×  {:.1} GB", s.count, gb(s.mb));
+            // Tab = left column / right-aligned column in the card.
+            let size = if s.mb < 1024 { format!("{} MB", s.mb) } else { format!("{:.1} GB", gb(s.mb)) };
+            body += &format!("\n{name}\t{}×  {size}", s.count);
         }
         (head, body)
     }
@@ -131,11 +131,14 @@ mod tests {
         s.record_close("Widgets", 20);
         s.record_close("Tailscale tray", 60);
         let (head, body) = s.summary_text();
-        assert_eq!(head, "Freed 4.4 GB this week (2.4 GB closed, 2.0 GB trimmed).");
+        assert_eq!(head, "Freed 4.4 GB this week");
         let lines: Vec<&str> = body.lines().collect();
-        assert_eq!(lines[0], "Most closed:");
+        assert_eq!(lines[0], "2.4 GB closed, 2.0 GB trimmed");
+        assert_eq!(lines[1], "Most closed:");
+        let lines = &lines[1..];
+        assert!(lines[1].contains('\t')); // right-aligned column in the card
         assert!(lines[1].starts_with("Discord") && lines[1].contains("3×") && lines[1].contains("2.3 GB"));
-        assert!(lines[2].starts_with("Widgets") && lines[2].contains("2×"));
+        assert!(lines[2].starts_with("Widgets") && lines[2].contains("2×") && lines[2].ends_with("40 MB"));
         assert!(lines[3].starts_with("Tailscale tray"));
     }
 
@@ -143,13 +146,14 @@ mod tests {
     fn top_five_only_and_empty_text() {
         let mut s = Stats::default();
         let (_, body) = s.summary_text();
-        assert_eq!(body, "No apps were closed this week.");
+        assert_eq!(body, "0.0 GB closed, 0.0 GB trimmed
+No apps were closed this week.");
         for (i, n) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
             for _ in 0..=i {
                 s.record_close(n, 10);
             }
         }
-        assert_eq!(s.summary_text().1.lines().count(), 6); // header + 5
+        assert_eq!(s.summary_text().1.lines().count(), 7); // split + header + 5
         assert!(!s.summary_text().1.contains("\na "));
     }
 

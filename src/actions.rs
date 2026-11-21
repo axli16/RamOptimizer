@@ -2,20 +2,15 @@
 
 use crate::procs::{is_user_visible, window_pid};
 use std::collections::HashSet;
-use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, S_OK, WPARAM};
+use crate::toast;
+use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM};
 use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
 use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
     QueryFullProcessImageNameW, TerminateProcess,
 };
-use windows_sys::Win32::UI::Controls::{
-    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TDF_ALLOW_DIALOG_CANCELLATION, TDN_CREATED,
-    TaskDialogIndirect,
-};
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, HWND_TOPMOST, PostMessageW, SWP_NOMOVE, SWP_NOSIZE, SetForegroundWindow, SetWindowPos, WM_CLOSE,
-};
-use windows_sys::core::{BOOL, HRESULT};
+use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, PostMessageW, WM_CLOSE};
+use windows_sys::core::BOOL;
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -59,44 +54,9 @@ pub fn close_windows(pids: &HashSet<u32>) {
     unsafe { EnumWindows(Some(close_cb), pids as *const _ as LPARAM) };
 }
 
-unsafe extern "system" fn on_top(h: HWND, msg: u32, _: WPARAM, _: LPARAM, _: isize) -> HRESULT {
-    // We are a background process, so Windows would otherwise open the dialog behind the active app.
-    if msg == TDN_CREATED as u32 {
-        unsafe {
-            SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-            SetForegroundWindow(h);
-        }
-    }
-    S_OK
-}
-
-/// Shows a task dialog with custom buttons (ids 100..). Returns the clicked index, None on close/X.
-fn dialog(owner: HWND, text: &str, content: &str, buttons: &[&str]) -> Option<usize> {
-    let title = wide("RamOptimizer");
-    let text = wide(text);
-    let content = wide(content);
-    let labels: Vec<Vec<u16>> = buttons.iter().map(|b| wide(b)).collect();
-    let btns: Vec<TASKDIALOG_BUTTON> = labels
-        .iter()
-        .enumerate()
-        .map(|(i, l)| TASKDIALOG_BUTTON { nButtonID: 100 + i as i32, pszButtonText: l.as_ptr() })
-        .collect();
-    let mut cfg: TASKDIALOGCONFIG = unsafe { std::mem::zeroed() };
-    cfg.cbSize = size_of::<TASKDIALOGCONFIG>() as u32;
-    cfg.hwndParent = owner;
-    cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
-    cfg.pszWindowTitle = title.as_ptr();
-    cfg.pszMainInstruction = text.as_ptr();
-    if content.len() > 1 {
-        cfg.pszContent = content.as_ptr();
-    }
-    cfg.cButtons = btns.len() as u32;
-    cfg.pButtons = btns.as_ptr();
-    cfg.nDefaultButton = if buttons.len() > 1 { 101 } else { 100 }; // the safe "Not now" / "Leave it" choice
-    cfg.pfCallback = Some(on_top);
-    let mut pressed = 0i32;
-    let hr = unsafe { TaskDialogIndirect(&cfg, &mut pressed, std::ptr::null_mut(), std::ptr::null_mut()) };
-    (hr == S_OK && pressed >= 100).then(|| (pressed - 100) as usize).filter(|i| *i < buttons.len())
+/// Shows the notification-style card (see toast.rs). Returns the clicked index; None on ✕/Esc.
+fn dialog(_owner: HWND, text: &str, content: &str, buttons: &[&str]) -> Option<usize> {
+    toast::show(text, content, buttons, None)
 }
 
 #[derive(Debug, PartialEq)]
@@ -115,7 +75,7 @@ pub enum IdleChoice {
 }
 
 pub fn ask_app(owner: HWND, name: &str, mb: u64) -> AppChoice {
-    match dialog(owner, &format!("{name} is closed but using {mb} MB."), "", &["Kill", "Not now", "Always kill", "Never ask"]) {
+    match dialog(owner, &format!("{name} is closed but using {mb} MB."), "Free it now?", &["Kill", "Not now", "Always kill", "Never ask"]) {
         Some(0) => AppChoice::Kill,
         Some(2) => AppChoice::Always,
         Some(3) => AppChoice::Never,
@@ -125,8 +85,9 @@ pub fn ask_app(owner: HWND, name: &str, mb: u64) -> AppChoice {
 
 pub fn ask_idle(owner: HWND, name: &str, minutes: u64, mb: u64) -> IdleChoice {
     let gb = mb as f64 / 1024.0;
-    let text = format!("{name} idle for {minutes} min (IDE + VM using {gb:.1} GB).");
-    match dialog(owner, &text, "", &["Close it", "Not now", "Snooze 1 hr"]) {
+    let text = format!("{name} idle for {minutes} min");
+    let detail = format!("IDE + VM using {gb:.1} GB. Close it to free the memory?");
+    match dialog(owner, &text, &detail, &["Close it", "Not now", "Snooze 1 hr"]) {
         Some(0) => IdleChoice::Close,
         Some(2) => IdleChoice::Snooze,
         _ => IdleChoice::NotNow,
@@ -138,7 +99,8 @@ pub fn ask_force(owner: HWND, name: &str) -> bool {
 }
 
 pub fn show_summary(owner: HWND, head: &str, body: &str) {
-    dialog(owner, head, body, &["OK"]);
+    let _ = owner;
+    toast::show(head, body, &["OK"], Some(30_000)); // summary auto-hides after 30 s
 }
 
 #[cfg(test)]
