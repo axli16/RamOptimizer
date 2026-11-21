@@ -5,6 +5,7 @@ mod config;
 mod log;
 mod policy;
 mod procs;
+mod stats;
 mod tray;
 
 use config::{Config, Decision};
@@ -15,6 +16,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::Foundation::SYSTEMTIME;
+use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -35,6 +38,8 @@ struct App {
     paused_until: Option<Instant>,
     pending_close: Option<(usize, Instant)>,
     taskbar_msg: u32,
+    stats: stats::Stats,
+    stats_dirty: bool,
 }
 
 thread_local! {
@@ -76,6 +81,20 @@ impl App {
                 self.cfg = cfg;
             }
         }
+    }
+
+    fn record_close(&mut self, name: &str, mb: u64) {
+        if mb > 0 {
+            self.stats.record_close(name, mb);
+            self.stats_dirty = true;
+        }
+    }
+
+    fn save_stats(&mut self) {
+        if let Err(e) = stats::save(&self.dir.join("stats.toml"), &self.stats) {
+            self.log(&format!("stats save failed: {e}"));
+        }
+        self.stats_dirty = false;
     }
 
     fn save_decision(&mut self, idx: usize, d: Decision) {
@@ -134,20 +153,29 @@ fn tick() {
                     let (exe, mb) = p.map_or(("?", 0), |p| (p.exe.as_str(), p.ws_bytes / MB));
                     with(|a| {
                         a.planner.note_trimmed(pid, now);
+                        a.stats.record_trim(mb);
+                        a.stats_dirty = true;
                         a.log(&format!("trim {exe} {pid} {mb}MB"));
                     });
                 }
             }
             Action::KillApp { app_idx } => {
                 let mb = kill_exes(&cfg.apps[app_idx].exe);
-                with(|a| a.log(&format!("kill {} {mb}MB (always)", app_name(&cfg, app_idx))));
+                let name = app_name(&cfg, app_idx);
+                with(|a| {
+                    a.log(&format!("kill {name} {mb}MB (always)"));
+                    a.record_close(&name, mb);
+                });
             }
             Action::PromptApp { app_idx, mb } => {
                 let name = app_name(&cfg, app_idx);
                 let choice = popup(|h| actions::ask_app(h, &name, mb));
                 let kill = |label: &str| {
                     let mb = kill_exes(&cfg.apps[app_idx].exe);
-                    with(|a| a.log(&format!("kill {name} {mb}MB{label}")));
+                    with(|a| {
+                        a.log(&format!("kill {name} {mb}MB{label}"));
+                        a.record_close(&name, mb);
+                    });
                 };
                 match choice {
                     actions::AppChoice::Kill => kill(""),
@@ -169,6 +197,7 @@ fn tick() {
                         // It may sit on its own "save changes?" dialog: don't re-ask while it closes.
                         a.planner.not_now_group(group_idx, Instant::now());
                         a.log(&format!("close {} {mb}MB", g.name));
+                        a.record_close(&g.name, mb); // counted once here, not again on force kill
                     }
                     actions::IdleChoice::NotNow => a.planner.not_now_group(group_idx, Instant::now()),
                     actions::IdleChoice::Snooze => a.planner.snooze_group(group_idx, Instant::now()),
@@ -192,7 +221,42 @@ fn tick() {
             with(|a| a.log(&format!("force kill {} {mb}MB", g.name)));
         }
     }
+    weekly_summary();
     actions::trim(std::process::id()); // keeps our own footprint near the 5 MB target
+}
+
+fn epoch_now() -> u64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Shows the weekly summary on the first tick after Sunday 18:00 local, then resets the totals.
+fn weekly_summary() {
+    let now = epoch_now();
+    let mut t: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    unsafe { GetLocalTime(&mut t) };
+    let anchor = stats::last_anchor(now, t.wDayOfWeek as u64, t.wHour as u64, t.wMinute as u64, t.wSecond as u64);
+    let text = with(|a| {
+        let first_run = a.stats.last_summary == 0;
+        let due = !a.popup_open && a.stats.check_due(now, anchor);
+        if first_run {
+            a.stats_dirty = true;
+        }
+        due.then(|| a.stats.summary_text())
+    });
+    if let Some((head, body)) = text {
+        // Reset before showing: a tick inside the dialog's message loop must not show it twice.
+        with(|a| {
+            a.log(&format!("weekly summary: {head}"));
+            a.stats.reset(now);
+            a.save_stats();
+        });
+        popup(|h| actions::show_summary(h, &head, &body));
+    }
+    with(|a| {
+        if a.stats_dirty {
+            a.save_stats();
+        }
+    });
 }
 
 fn open_config() {
@@ -262,6 +326,7 @@ fn main() {
     let poll = cfg.poll_seconds.max(1);
     let cfg_mtime = mtime(&dir.join("config.toml"));
     let planner = Planner::new(&cfg);
+    let stats_path = dir.join("stats.toml");
     APP.with(|a| {
         *a.borrow_mut() = Some(App {
             hwnd,
@@ -273,6 +338,8 @@ fn main() {
             paused_until: None,
             pending_close: None,
             taskbar_msg,
+            stats: stats::load(&stats_path),
+            stats_dirty: false,
         })
     });
 

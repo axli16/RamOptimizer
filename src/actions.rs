@@ -71,9 +71,10 @@ unsafe extern "system" fn on_top(h: HWND, msg: u32, _: WPARAM, _: LPARAM, _: isi
 }
 
 /// Shows a task dialog with custom buttons (ids 100..). Returns the clicked index, None on close/X.
-fn dialog(owner: HWND, text: &str, buttons: &[&str]) -> Option<usize> {
+fn dialog(owner: HWND, text: &str, content: &str, buttons: &[&str]) -> Option<usize> {
     let title = wide("RamOptimizer");
     let text = wide(text);
+    let content = wide(content);
     let labels: Vec<Vec<u16>> = buttons.iter().map(|b| wide(b)).collect();
     let btns: Vec<TASKDIALOG_BUTTON> = labels
         .iter()
@@ -86,9 +87,12 @@ fn dialog(owner: HWND, text: &str, buttons: &[&str]) -> Option<usize> {
     cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
     cfg.pszWindowTitle = title.as_ptr();
     cfg.pszMainInstruction = text.as_ptr();
+    if content.len() > 1 {
+        cfg.pszContent = content.as_ptr();
+    }
     cfg.cButtons = btns.len() as u32;
     cfg.pButtons = btns.as_ptr();
-    cfg.nDefaultButton = 101; // the safe "Not now" / "Leave it" style choice
+    cfg.nDefaultButton = if buttons.len() > 1 { 101 } else { 100 }; // the safe "Not now" / "Leave it" choice
     cfg.pfCallback = Some(on_top);
     let mut pressed = 0i32;
     let hr = unsafe { TaskDialogIndirect(&cfg, &mut pressed, std::ptr::null_mut(), std::ptr::null_mut()) };
@@ -111,7 +115,7 @@ pub enum IdleChoice {
 }
 
 pub fn ask_app(owner: HWND, name: &str, mb: u64) -> AppChoice {
-    match dialog(owner, &format!("{name} is closed but using {mb} MB."), &["Kill", "Not now", "Always kill", "Never ask"]) {
+    match dialog(owner, &format!("{name} is closed but using {mb} MB."), "", &["Kill", "Not now", "Always kill", "Never ask"]) {
         Some(0) => AppChoice::Kill,
         Some(2) => AppChoice::Always,
         Some(3) => AppChoice::Never,
@@ -122,7 +126,7 @@ pub fn ask_app(owner: HWND, name: &str, mb: u64) -> AppChoice {
 pub fn ask_idle(owner: HWND, name: &str, minutes: u64, mb: u64) -> IdleChoice {
     let gb = mb as f64 / 1024.0;
     let text = format!("{name} idle for {minutes} min (IDE + VM using {gb:.1} GB).");
-    match dialog(owner, &text, &["Close it", "Not now", "Snooze 1 hr"]) {
+    match dialog(owner, &text, "", &["Close it", "Not now", "Snooze 1 hr"]) {
         Some(0) => IdleChoice::Close,
         Some(2) => IdleChoice::Snooze,
         _ => IdleChoice::NotNow,
@@ -130,7 +134,11 @@ pub fn ask_idle(owner: HWND, name: &str, minutes: u64, mb: u64) -> IdleChoice {
 }
 
 pub fn ask_force(owner: HWND, name: &str) -> bool {
-    dialog(owner, &format!("{name} did not close. Force kill it?"), &["Force kill", "Leave it"]) == Some(0)
+    dialog(owner, &format!("{name} did not close. Force kill it?"), "", &["Force kill", "Leave it"]) == Some(0)
+}
+
+pub fn show_summary(owner: HWND, head: &str, body: &str) {
+    dialog(owner, head, body, &["OK"]);
 }
 
 #[cfg(test)]
