@@ -167,6 +167,8 @@ fn tick() {
                     actions::IdleChoice::Close => {
                         actions::close_windows(&alive(&g.exe));
                         a.pending_close = Some((group_idx, Instant::now() + Duration::from_secs(60)));
+                        // It may sit on its own "save changes?" dialog: don't re-ask while it closes.
+                        a.planner.not_now_group(group_idx, Instant::now());
                         a.log(&format!("close {} {mb}MB", g.name));
                     }
                     actions::IdleChoice::NotNow => a.planner.not_now_group(group_idx, Instant::now()),
